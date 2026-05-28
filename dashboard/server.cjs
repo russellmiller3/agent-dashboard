@@ -75,6 +75,26 @@ function pulseSources() {
     });
   }
 
+  // Also watch any .claude/state/agent-pulse.log inside the user's project workspace.
+  // Agents launched from a project folder (e.g. C:\Users\rmill\Desktop\programming)
+  // often write to a project-scoped pulse log there, not the user-home one.
+  // Discover via env override first, then fall back to a known workspace location.
+  const workspaceCandidates = [];
+  if (process.env.AGENT_PULSE_WORKSPACE) {
+    workspaceCandidates.push(process.env.AGENT_PULSE_WORKSPACE);
+  }
+  workspaceCandidates.push(
+    path.join(HOME, 'Desktop', 'programming'),
+    path.join(HOME, 'Desktop', 'programming', 'cast')
+  );
+  for (const ws of workspaceCandidates) {
+    candidates.push({
+      key: `workspace-${path.basename(ws)}`,
+      label: `Workspace (${path.basename(ws)})`,
+      file: path.join(ws, '.claude', 'state', 'agent-pulse.log'),
+    });
+  }
+
   candidates.push(
     {
       key: 'codex',
