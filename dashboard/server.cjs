@@ -496,11 +496,33 @@ const server = http.createServer((req, res) => {
       const brief = lines.join('\n');
 
       const briefPath = path.join(HOME, '.claude', 'state', 'control-tower-brief.md');
+      // Bridge to the supervisor-message back-channel: appending a JSON-line
+      // event here means an open Claude Code session sees the brief on its
+      // next prompt without Russell needing to paste from the clipboard.
+      // ~/.claude/hooks/supervisor-message-inject.mjs reads this log on every
+      // SessionStart + UserPromptSubmit and advances the cursor so the brief
+      // does not re-fire. (Russell's spec, 2026-05-28.)
+      const supervisorLogPath = path.join(HOME, '.claude', 'state', 'supervisor-messages.log');
       try {
         fs.mkdirSync(path.dirname(briefPath), { recursive: true });
         fs.writeFileSync(briefPath, brief, 'utf8');
+
+        try {
+          const supervisorEvent = {
+            ts: new Date().toISOString(),
+            from: 'control-tower-brief',
+            severity: 'alert',
+            message: brief
+          };
+          fs.appendFileSync(supervisorLogPath, JSON.stringify(supervisorEvent) + '\n', 'utf8');
+        } catch (logErr) {
+          // Best-effort — the markdown file + clipboard path still works even
+          // if the supervisor log append fails. Don't fail the whole request.
+          console.error('[brief] supervisor-messages.log append failed:', logErr.message);
+        }
+
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, brief, path: briefPath }));
+        res.end(JSON.stringify({ ok: true, brief, path: briefPath, supervisorLogPath }));
       } catch (err) {
         res.writeHead(500, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err.message }));
