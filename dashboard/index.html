@@ -1747,6 +1747,7 @@
       <a class="tool-pill" href="/mocks/Control%20Tower%20Tufte%20TUI.html" target="_blank"><i class="icon" data-lucide="terminal"></i><span>TUI</span></a>
       <a class="tool-pill" href="/mocks/Control%20Tower%20Calm.html" target="_blank"><i class="icon" data-lucide="waves"></i><span>Calm</span></a>
       <button class="theme-btn" id="theme-toggle" type="button"><i class="icon" data-lucide="moon"></i><span>Night</span></button>
+      <button class="action-btn secondary" id="global-brief" type="button" data-reset-label="Brief Claude"><i class="icon" data-lucide="message-square-share"></i><span>Brief Claude</span></button>
       <button class="action-btn primary" id="global-supervisor" type="button" data-reset-label="Ask Supervisor Agent"><i class="icon" data-lucide="scan-search"></i><span>Ask Supervisor Agent</span></button>
     </div>
   </header>
@@ -2182,6 +2183,39 @@
     });
   }
 
+  function briefClaude(agents, button) {
+    const attention = agents.filter((agent) => triageOf(agent) === 'attention');
+    if (!attention.length) {
+      showToast('Nothing to brief', 'No backed-up agents right now.');
+      return;
+    }
+    const payload = attention.map((agent) => ({
+      task: agent.task,
+      sourceLabel: agent.sourceLabel || 'Agent',
+      stateLabel: stateLabel(agent),
+      goal: agent.goal || '(none stated)',
+      lastPulse: latestPulseText(agent),
+    }));
+    fetch('/api/brief', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ agents: payload }),
+    }).then((r) => r.json()).then((result) => {
+      if (!result.ok) throw new Error(result.error || 'Request failed');
+      return navigator.clipboard.writeText(result.brief).then(() => result).catch(() => result);
+    }).then(() => {
+      showToast('Brief ready', 'Copied to clipboard and saved to ~/.claude/state/control-tower-brief.md — paste into Claude Code.');
+      if (button) {
+        const orig = button.innerHTML;
+        button.innerHTML = '<i class="icon" data-lucide="check"></i><span>Copied</span>';
+        renderIcons();
+        setTimeout(() => { button.innerHTML = orig; renderIcons(); }, 2500);
+      }
+    }).catch((error) => {
+      showToast('Brief failed', error.message);
+    });
+  }
+
   function visibleAgents(agents) {
     return agents.filter((agent) => {
       const triageMatch = triageFilter === 'all' || triageOf(agent) === triageFilter;
@@ -2428,12 +2462,35 @@
     });
   }
 
+  function pickActivityIcon(event) {
+    if (event.kind === 'problem') return 'alert-triangle';
+    if (event.kind === 'milestone') return 'check-circle-2';
+    const text = (event.text || '').toLowerCase();
+    // Order matters: more specific patterns first.
+    if (/\bgoal:/.test(text)) return 'target';
+    if (/\bcommit(ted|ing)?\b|\bcommit hash\b|\bsha\b/.test(text)) return 'git-commit-horizontal';
+    if (/\bmerg(e|ed|ing)\b|\bpull request\b|\bpr #/.test(text)) return 'git-pull-request';
+    if (/\bpush(ed|ing)?\b/.test(text)) return 'upload-cloud';
+    if (/\bbranch(ed|ing)?\b|\bswitch(ed|ing)? to\b/.test(text)) return 'git-branch';
+    if (/\btest(s|ing|ed)?\b|\bspec(s)?\b|\bsmoke\b/.test(text)) return 'flask-conical';
+    if (/\bscreenshot|\bsnapshot|\bphoto/.test(text)) return 'camera';
+    if (/\bedit(ed|ing)?\b|\bupdat(e|ed|ing)\b|\bwrite|wrote|writing\b|\brewrit/.test(text)) return 'pencil';
+    if (/\bread(ing)?\b|\blook(ed|ing)?\b|\binspect/.test(text)) return 'eye';
+    if (/\bsearch(ing|ed)?\b|\bgrep|\bfind\b/.test(text)) return 'search';
+    if (/\brun(ning|s)?\b|\bexecut/.test(text)) return 'play';
+    if (/\bstop(ped|ping)?\b|\bhalt|\bkill(ed)?\b/.test(text)) return 'octagon-x';
+    if (/\binstall(ed|ing)?\b|\bnpm|\bpip|\byarn/.test(text)) return 'package';
+    if (/\bdeploy(ed|ing)?\b|\bship(ped|ping)?\b|\brelease/.test(text)) return 'rocket';
+    if (/\berror|\bfail(ed|ure)?\b|\bcrash/.test(text)) return 'alert-triangle';
+    if (/\bfix(ed|ing)?\b|\bpatch(ed|ing)?\b|\brepair/.test(text)) return 'wrench';
+    if (/\bplan(ned|ning)?\b|\btodo|\btask/.test(text)) return 'list-checks';
+    if (/\bask(ed|ing)?\b|\bquestion|\brequest/.test(text)) return 'message-circle-question';
+    if (/\bdebug(ging|ged)?\b/.test(text)) return 'bug';
+    return 'activity';
+  }
+
   function renderActivity(event, now, lead) {
-    const icon = event.kind === 'problem'
-      ? 'alert-triangle'
-      : event.kind === 'milestone'
-        ? 'check-circle-2'
-        : 'circle';
+    const icon = pickActivityIcon(event);
     return '<div class="activity' + (lead ? ' lead' : '') + '">'
       + '<time>' + relTime(event.ms, now) + '</time>'
       + '<span class="' + event.kind + '"><i data-lucide="' + icon + '"></i></span>'
@@ -2472,7 +2529,7 @@
       const recentEvents = (agent.events || []).slice(0, 3);
       const recent = recentEvents.length
         ? recentEvents.map((event, index) => renderActivity(event, state.now, index === 0)).join('')
-        : '<div class="activity lead"><time>now</time><span class="normal"><i data-lucide="circle"></i></span><div class="activity-text">' + escapeHtml(agent.goal) + '</div></div>';
+        : '<div class="activity lead"><time>now</time><span class="normal"><i data-lucide="target"></i></span><div class="activity-text">' + escapeHtml(agent.goal) + '</div></div>';
       const usage = '<div class="usage-row"><span class="badge">Tokens ' + escapeHtml(formatTokens(agent.tokens || 0)) + '</span><span class="badge">Cost ' + escapeHtml(formatCost(agent.costUsd || 0)) + '</span></div>';
       const checkpoint = renderCheckpoint(agent, triage, true);
       return '<button type="button" class="agent-card ' + cardClass + selected + '" data-agent="' + escapeHtml(key) + '">'
@@ -2620,6 +2677,10 @@
     document.documentElement.dataset.theme = next;
     localStorage.setItem('control-tower-theme', next);
     $('theme-toggle').querySelector('span').textContent = next === 'dark' ? 'Light' : 'Night';
+  });
+
+  $('global-brief').addEventListener('click', (event) => {
+    briefClaude((latestState || { agents: [] }).agents || [], event.currentTarget);
   });
 
   $('global-supervisor').addEventListener('click', (event) => {
