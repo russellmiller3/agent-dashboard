@@ -26,6 +26,7 @@ const HOME = os.homedir();
 const PORT = Number(process.env.CONTROL_TOWER_PORT || process.env.AGENT_DASHBOARD_PORT || 9999);
 const STALL_MS = 3 * 60 * 1000;
 const DORMANT_MS = 30 * 60 * 1000;
+const STALE_AGE_MS = 2 * 60 * 60 * 1000;
 
 function contentType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -298,6 +299,10 @@ function buildState() {
       })),
     });
   }
+  const staleCutoff = now - STALE_AGE_MS;
+  const freshAgents = agents.filter((agent) => agent.lastEmitMs >= staleCutoff);
+  agents.length = 0;
+  agents.push(...freshAgents);
   agents.sort((a, b) => b.lastEmitMs - a.lastEmitMs);
   const tokensTotal = agents.reduce((sum, agent) => sum + (agent.tokens || 0), 0);
   const costUsdTotal = Number(agents.reduce((sum, agent) => sum + (agent.costUsd || 0), 0).toFixed(4));
@@ -464,6 +469,43 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(200, { 'content-type': contentType(filePath) });
     fs.createReadStream(filePath).pipe(res);
+    return;
+  }
+
+  if (requestUrl.pathname === '/api/brief' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      let parsed = {};
+      try { parsed = JSON.parse(body || '{}'); } catch {}
+
+      const agents = Array.isArray(parsed.agents) ? parsed.agents : [];
+      const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const lines = [
+        `[Control Tower Brief — ${ts}]`,
+        `${agents.length} agent${agents.length === 1 ? '' : 's'} backed up.`,
+        '',
+      ];
+      agents.forEach((a, i) => {
+        lines.push(`${i + 1}. "${a.task}" (${a.sourceLabel || 'unknown'}) — ${a.stateLabel || 'backed up'}`);
+        lines.push(`   Goal: ${a.goal || '(none stated)'}`);
+        lines.push(`   Last pulse: ${a.lastPulse || '(none)'}`);
+        lines.push('');
+      });
+      lines.push('Paste this into Claude Code to resume supervision.');
+      const brief = lines.join('\n');
+
+      const briefPath = path.join(HOME, '.claude', 'state', 'control-tower-brief.md');
+      try {
+        fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+        fs.writeFileSync(briefPath, brief, 'utf8');
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, brief, path: briefPath }));
+      } catch (err) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    });
     return;
   }
 
